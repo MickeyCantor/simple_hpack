@@ -1,3 +1,18 @@
+use std::collections::HashMap;
+
+pub struct Hpack{
+    static_table: HashMap<String,String>,
+    dynamic_table: HashMap<String,String>,
+    dynamic_table_size: usize,
+}
+
+impl Hpack{
+    pub fn read_headers(stream: Vec<u8>) -> Result<Vec<u8>,&'static str>{
+        Err("Write me!")
+    }
+}
+
+
 /// Function that returns a new Indexed Header Field Representation as per [IETF RFC 7541 Section 6.1](https://tools.ietf.org/html/rfc7541#section-6.1)
 /// 
 /// ## Arguments 
@@ -63,8 +78,11 @@ pub fn new_literal(value: &str, index: u32, name: Option<&str>, huffman: bool) -
 /// ## Returns
 /// * Vec<u8> - a Literal field that is not indexed
 pub fn not_indexed(vec: Vec<u8>) -> Vec<u8>{
-    let (int, vec) = decode_int(vec, 6);
-    encode_int(4, int, vec)
+    let (int,mut vec) = decode_int(vec, 6);
+    let mut re_encoded = encode_int(4, int, Vec::new());
+    re_encoded.append(&mut vec);
+
+    re_encoded
 }
 
 /// Function that takes a Literal field and sets it to never be indexed 
@@ -75,11 +93,14 @@ pub fn not_indexed(vec: Vec<u8>) -> Vec<u8>{
 /// ## Returns
 /// * Vec<u8> - a Literal field that is never indexed
 pub fn never_indexed(vec: Vec<u8>) -> Vec<u8>{
-    let (int, vec) = decode_int(vec, 6);
-    mask_first_byte(encode_int(4, int, vec),16_u8)
+    let (int,mut vec) = decode_int(vec, 6);
+    let mut re_encoded =  mask_first_byte(encode_int(4, int, Vec::new()),16_u8);
+    re_encoded.append(&mut vec);
+
+    re_encoded
 }
 
-/// Function that encodes an integer using an ***n*** byte prefix of zeros as per [IETF RFC 7541 Section 5.1](https://tools.ietf.org/html/rfc7541#section-5.1)
+/// Function that encodes an integer using an ***n*** bytes leaving a prefix of ***8-n*** of zeros as per [IETF RFC 7541 Section 5.1](https://tools.ietf.org/html/rfc7541#section-5.1)
 /// 
 /// ## Arguments 
 /// * n - the length of the prefix between 0..8
@@ -105,7 +126,7 @@ fn encode_int (n: u32, number: u32,vec: Vec<u8>) -> Vec<u8> {
     mut_vec
 }
 
-/// Function that takes a stream of bytes represented as vector, and a padding value **n** and decodes the integer, returning the number and the remaining byte stream
+/// Function that takes a stream of bytes represented as vector, and the number of bits encoded on **n** and decodes the integer, returning the number and the remaining byte stream
 /// as per [IETF RFC 7541 Section 5.1](https://tools.ietf.org/html/rfc7541#section-5.1)
 /// 
 /// ## Arguments
@@ -116,18 +137,18 @@ fn encode_int (n: u32, number: u32,vec: Vec<u8>) -> Vec<u8> {
 /// * (u32, Vec<u8>) - a tuple containing the decoded 32 bit integer, and a vector containing the remaining byte stream
 fn decode_int(vec: Vec<u8>, n: u32) -> (u32, Vec<u8>) {
     let mut vec = vec;
-    let mut int: u32 = (vec.remove(0) & (127_u8 >> (8 - n))) as u32;
+    let mut int: u32 = (vec.remove(0) << (8-n) >> (8-n)) as u32;
 
     if int < 2_u32.pow(n) - 1 {
         (int, vec)
     }else{
         let mut m = 0;
-        loop {
+        loop{
             let b = vec.remove(0);
-            int = int + (b & 127_u8) as u32 * 2_u32.pow(m);
+            int = int + ((b & 127) as u32 * 2_u32.pow(m));
             m = m + 7;
-            if b & 128_u8 == 128_u8 {break;}
-        };
+            if (b & 128) != 128 {break}
+        }
         (int, vec)
     }
 } 
@@ -208,5 +229,44 @@ mod tests {
         , literal)
     }
 
+    #[test]
+    fn test_decode_fits_in_prefix(){
+        let decoded = decode_int(vec![10_u8], 4);
+
+        assert_eq!((10,Vec::new()),decoded);
+    }
+
+    #[test]
+    fn test_decode_larger_then_prefix(){
+        let decoded = decode_int(vec![31_u8, 154_u8, 10_u8], 5);
+
+        assert_eq!((1337,Vec::new()), decoded);
+    }
+
+    #[test]
+    fn test_decode_larger_then_prefix_with_remaining_bytes(){
+         let decoded = decode_int(vec![65_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30], 6);
+
+        assert_eq!((1,vec![10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]), decoded);
+    }
+
+    #[test]
+    fn test_new_literal_string_not_indexed(){
+        let literal = not_indexed(new_literal("This is 10", 1, None, false).unwrap());
+
+        assert_eq!(
+            vec![1_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
+        , literal)
+    }
+
+    #[test]
+    fn test_new_literal_string_never_indexed(){
+        let literal = never_indexed(new_literal("This is 10", 1, None, false).unwrap());
+
+        assert_eq!(
+            vec![17_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
+        , literal)
+    }
 
 }
+
