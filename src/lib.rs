@@ -1,13 +1,48 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub struct Hpack{
-    static_table: HashMap<String,String>,
-    dynamic_table: HashMap<String,String>,
+    static_table: HashSet<Header>,
+    dynamic_table: HashSet<Header>,
     dynamic_table_size: usize,
 }
 
+#[derive(Hash, Eq, PartialEq, Debug)]
+pub struct Header {
+    name: String,
+    value: String,
+    index: usize,
+    indexed: Indexed,
+}
+
+impl Header{
+    pub fn new(name: String, value: String, index: usize, indexed: Indexed) -> Header {
+        Header{name: name, value: value, index: index, indexed: indexed}
+    }
+}
+
+#[derive(Hash, Eq, PartialEq, Debug)]
+pub enum Indexed {
+    Yes,
+    No,
+    Never,
+}
+
 impl Hpack{
-    pub fn read_headers(stream: Vec<u8>) -> Result<Vec<u8>,&'static str>{
+    pub fn new(dynamic_table_size: usize,static_table: Option<HashSet<Header>>) -> Hpack{
+        Hpack{static_table: HashSet::new(), dynamic_table: HashSet::new(), dynamic_table_size: dynamic_table_size}
+    }
+
+    ///Function used to read in a stream of headers, and convert them into a list of headers for consumption. 
+    /// 
+    /// ## Arguments
+    /// 
+    /// * stream - a vector of bytes used to represent the stream of headers being sent in
+    /// 
+    /// ## Returns
+    /// 
+    /// 
+    /// 
+    pub fn read_headers(&self, stream: Vec<u8>) -> Result<Vec<Header>,&'static str>{
         Err("Write me!")
     }
 }
@@ -266,6 +301,17 @@ mod tests {
         assert_eq!(
             vec![17_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
         , literal)
+    }
+
+    #[test]
+    fn test_read_headers_static_indexed(){
+        let hpack = Hpack::new(128, None);
+
+        let stream = vec![130_u8,132_u8];
+
+        let expected = vec![Header::new(String::from(":method"), String::from("GET"), 2, Indexed::Yes)];
+
+        assert_eq!(expected,hpack.read_headers(stream).unwrap())
     }
 
 }
