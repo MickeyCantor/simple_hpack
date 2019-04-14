@@ -7,27 +7,13 @@ pub struct Hpack{
 }
 
 pub struct DynamicTable{
-    table: Vec<Header>,
+    table: Vec<(String,String)>,
     table_size: usize,
 }
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct Header {
-    name: String,
-    value: Option<String>,
-    index: usize,
-}
-
-impl PartialEq<u32> for Header{
-    fn eq(&self, other: &u32) -> bool {
-        &(self.index as u32) == other
-    }
-}
-
-impl Header{
-    pub fn new(name: String, value: Option<String>, index: usize) -> Header {
-        Header{name: name, value: value, index: index}
-    }
+    value: (String, String)
 }
 
 impl DynamicTable {
@@ -44,15 +30,8 @@ impl DynamicTable {
     /// ## Returns
     /// 
     /// Nothing
-    pub fn add(&mut self, mut header: Header) {
-        for index in 0..self.table.len(){
-            let mut header = self.table.remove(0);
-            header.index = header.index + 1;
-            self.table.insert(index, header);
-        }
-
-        header.index = 62;
-        self.table.push(header);
+    pub fn add(&mut self, header: (String,String)) {
+        self.table.insert(0, header);
     }
 }
 
@@ -89,13 +68,13 @@ impl Hpack{
     fn process_indexed(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
         let (int, stream) = decode_int(stream, 7);
         let mut vec = self.read_headers(stream)?;
-        vec.insert(0, self.get_static_entry_from_index(int)?.clone());
+        vec.insert(0, Header{value: self.get_static_entry_from_index(int)?});
         Ok(vec)
     }
 
-    fn get_static_entry_from_index(&self, i: u32) -> Result<Header, &'static str> {
-        match STATIC_TABLE.iter().find(|&x|{x==&i}) {
-            Some(x) => Ok(x.clone()),
+    fn get_static_entry_from_index(&self, i: u32) -> Result<(String,String), &'static str> {
+        match STATIC_TABLE.get((i-1) as usize) {
+            Some(x) => Ok((String::from(x.0),String::from(x.1))),
             None => Err("Write Me! 2"),
         }
     }
@@ -104,10 +83,6 @@ impl Hpack{
         let (index, stream) = decode_int(stream, 6);
             let (length, mut stream) = decode_int(stream, 7);
             let range = length as usize;
-
-            println!{"index - {}, length - {}, range - {}",index,length,range};
-
-
 
             match str::from_utf8(&stream.as_slice()[..range]) {
                 Ok(x) => {
@@ -119,9 +94,9 @@ impl Hpack{
                     let mut vec = self.read_headers(stream)?;
                     let mut header = self.get_static_entry_from_index(index)?.clone();
                     
-                    header.value = Some(value);
+                    header.1 = value;
                     self.dynamic_table.add(header.clone());
-                    vec.insert(0, header);
+                    vec.insert(0, Header{value: header});
                     
                     Ok(vec)
                 },
@@ -291,69 +266,69 @@ fn mask_first_byte(vec: Vec<u8>, mask: u8) -> Vec<u8> {
 static ERROR_INDEX_ZERO: &str = "Error - Indexed field cannot be zero";
 lazy_static! {
     ///Static header list as defined by [IETF RFC 7541 Section 5.1](https://tools.ietf.org/html/rfc7541#appendix-A)
-    static ref STATIC_TABLE: HashSet<Header> = {
-        let mut table = HashSet::new();
-        table.insert(Header::new(String::from(":authority"), None, 1));
-        table.insert(Header::new(String::from(":method"), Some(String::from("GET")), 2));
-        table.insert(Header::new(String::from(":method"), Some(String::from("POST")), 3));
-        table.insert(Header::new(String::from(":path"), Some(String::from("/")), 4));
-        table.insert(Header::new(String::from(":path"), Some(String::from("/index.html")), 5));
-        table.insert(Header::new(String::from(":scheme"), Some(String::from("http")), 6));
-        table.insert(Header::new(String::from(":scheme"), Some(String::from("https")), 7));
-        table.insert(Header::new(String::from(":status"), Some(String::from("200")), 8));
-        table.insert(Header::new(String::from(":status"), Some(String::from("204")), 9));
-        table.insert(Header::new(String::from(":status"), Some(String::from("206")), 10));
-        table.insert(Header::new(String::from(":status"), Some(String::from("304")), 11));
-        table.insert(Header::new(String::from(":status"), Some(String::from("400")), 12));
-        table.insert(Header::new(String::from(":status"), Some(String::from("404")), 13));
-        table.insert(Header::new(String::from(":status"), Some(String::from("500")), 14));
-        table.insert(Header::new(String::from("accept-charset"), None, 15));
-        table.insert(Header::new(String::from("accept-encoding"), Some(String::from("gzip, deflate")), 16));
-        table.insert(Header::new(String::from("accept-language"), None, 17));
-        table.insert(Header::new(String::from("accept-ranges"), None, 18));
-        table.insert(Header::new(String::from("accept"), None, 19));
-        table.insert(Header::new(String::from("access-control-allow-origin"), None, 20));
-        table.insert(Header::new(String::from("age"), None, 21));
-        table.insert(Header::new(String::from("allow"), None, 22));
-        table.insert(Header::new(String::from("authorization"), None, 23));
-        table.insert(Header::new(String::from("cache-control"), None, 24));
-        table.insert(Header::new(String::from("content-disposition"), None, 25));
-        table.insert(Header::new(String::from("content-encoding"), None, 26));
-        table.insert(Header::new(String::from("content-language"), None, 27));
-        table.insert(Header::new(String::from("content-length"), None, 28));
-        table.insert(Header::new(String::from("content-location"), None, 29));
-        table.insert(Header::new(String::from("contant-range"), None, 30));
-        table.insert(Header::new(String::from("content-type"), None, 31));
-        table.insert(Header::new(String::from("cookie"), None, 32));
-        table.insert(Header::new(String::from("date"), None, 33));
-        table.insert(Header::new(String::from("etag"), None, 34));
-        table.insert(Header::new(String::from("expect"), None, 35));
-        table.insert(Header::new(String::from("expires"), None, 36));
-        table.insert(Header::new(String::from("from"), None, 37));
-        table.insert(Header::new(String::from("host"), None, 38));
-        table.insert(Header::new(String::from("if-match"), None, 39));
-        table.insert(Header::new(String::from("if-modified-since"), None, 40));
-        table.insert(Header::new(String::from("if-none-match"), None, 41));
-        table.insert(Header::new(String::from("if-range"), None, 42));
-        table.insert(Header::new(String::from("if-unmodified-since"), None, 43));
-        table.insert(Header::new(String::from("last-modified"), None, 44));
-        table.insert(Header::new(String::from("link"), None, 45));
-        table.insert(Header::new(String::from("location"), None, 46));
-        table.insert(Header::new(String::from("max-forwards"), None, 47));
-        table.insert(Header::new(String::from("proxy-authenticate"), None, 48));
-        table.insert(Header::new(String::from("proxy-authorization"), None, 49));
-        table.insert(Header::new(String::from("range"), None, 50));
-        table.insert(Header::new(String::from("referer"), None, 51));
-        table.insert(Header::new(String::from("refresh"), None, 52));
-        table.insert(Header::new(String::from("retry-after"), None, 53));
-        table.insert(Header::new(String::from("server"), None, 54));
-        table.insert(Header::new(String::from("set-cookie"), None, 55));
-        table.insert(Header::new(String::from("strict-transport-security"), None, 56));
-        table.insert(Header::new(String::from("transfer-encoding"), None, 57));
-        table.insert(Header::new(String::from("user-agent"), None, 58));
-        table.insert(Header::new(String::from("vary"), None, 59));
-        table.insert(Header::new(String::from("via"), None, 60));
-        table.insert(Header::new(String::from("www-authenticate"), None, 61));
+    static ref STATIC_TABLE: Vec<(&'static str,&'static str)> = {
+        let mut table = Vec::new();
+        table.push((":authority",""));
+        table.push((":method","GET"));
+        table.push((":method","POST"));
+        table.push((":path","/"));
+        table.push((":path","/index.html"));
+        table.push((":scheme","http"));
+        table.push((":scheme","https"));
+        table.push((":status","200"));
+        table.push((":status","204"));
+        table.push((":status","206"));
+        table.push((":status","304"));
+        table.push((":status","400"));
+        table.push((":status","404"));
+        table.push((":status","500"));
+        table.push(("accept-charset",""));
+        table.push(("accept-encoding","gzip,deflate"));
+        table.push(("accept-language",""));
+        table.push(("accept-ranges",""));
+        table.push(("accept",""));
+        table.push(("access-control-allow-origin",""));
+        table.push(("age",""));
+        table.push(("allow",""));
+        table.push(("authorization",""));
+        table.push(("cache-control",""));
+        table.push(("content-disposition",""));
+        table.push(("content-encoding",""));
+        table.push(("content-language",""));
+        table.push(("content-length",""));
+        table.push(("content-location",""));
+        table.push(("contant-range",""));
+        table.push(("content-type",""));
+        table.push(("cookie",""));
+        table.push(("date",""));
+        table.push(("etag",""));
+        table.push(("expect",""));
+        table.push(("expires",""));
+        table.push(("from",""));
+        table.push(("host",""));
+        table.push(("if-match",""));
+        table.push(("if-modified-since",""));
+        table.push(("if-none-match",""));
+        table.push(("if-range",""));
+        table.push(("if-unmodified-since",""));
+        table.push(("last-modified",""));
+        table.push(("link",""));
+        table.push(("location",""));
+        table.push(("max-forwards",""));
+        table.push(("proxy-authenticate",""));
+        table.push(("proxy-authorization",""));
+        table.push(("range",""));
+        table.push(("referer",""));
+        table.push(("refresh",""));
+        table.push(("retry-after",""));
+        table.push(("server",""));
+        table.push(("set-cookie",""));
+        table.push(("strict-transport-security",""));
+        table.push(("transfer-encoding",""));
+        table.push(("user-agent",""));
+        table.push(("vary",""));
+        table.push(("via",""));
+        table.push(("www-authenticate",""));
         table
     };
 }
@@ -392,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_new_literal_string(){
-        let literal = new_literal("This is 10", 1, None, false).unwrap();
+        let literal = new_literal("This is 10",1, None, false).unwrap();
 
         assert_eq!(
             vec![65_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
@@ -401,14 +376,14 @@ mod tests {
 
     #[test]
     fn test_new_literal_string_zero_index(){
-        let literal = new_literal("This is 10", 0, None, false).unwrap_err();
+        let literal = new_literal("This is 10",0, None, false).unwrap_err();
 
         assert_eq!(ERROR_INDEX_ZERO, literal);
     }
 
     #[test]
     fn test_new_literal_with_name(){
-        let literal = new_literal("This is 10", 0, Some("Name"), false).unwrap();
+        let literal = new_literal("This is 10",0, Some("Name"), false).unwrap();
 
         assert_eq!(
             vec![64_u8,4_u8,0x4E,0x61,0x6D,0x65,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
@@ -438,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_new_literal_string_not_indexed(){
-        let literal = not_indexed(new_literal("This is 10", 1, None, false).unwrap());
+        let literal = not_indexed(new_literal("This is 10",1, None, false).unwrap());
 
         assert_eq!(
             vec![1_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
@@ -447,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_new_literal_string_never_indexed(){
-        let literal = never_indexed(new_literal("This is 10", 1, None, false).unwrap());
+        let literal = never_indexed(new_literal("This is 10",1, None, false).unwrap());
 
         assert_eq!(
             vec![17_u8,10_u8,0x54,0x68,0x69,0x73,0x20,0x69,0x73,0x20,0x31,0x30]
@@ -460,8 +435,8 @@ mod tests {
 
         let stream = vec![130_u8,132_u8];
 
-        let expected = vec![Header::new(String::from(":method"), Some(String::from("GET")), 2),
-                            Header::new(String::from(":path"), Some(String::from("/")), 4)];
+        let expected = vec![Header{value: (String::from(":method"),String::from("GET"))},
+                            Header{value: (String::from(":path"),String::from("/"))}];
 
         assert_eq!(expected,hpack.read_headers(stream).unwrap())
     }
@@ -472,8 +447,8 @@ mod tests {
 
         let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header::new(String::from(":method"), Some(String::from("GET")), 2);
-        let header_2 = Header::new(String::from("accept-charset"), Some(String::from("set")), 15);
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
 
         let expected = vec![header_1.clone(), header_2.clone()];
 
@@ -486,9 +461,8 @@ mod tests {
 
         let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header::new(String::from(":method"), Some(String::from("GET")), 2);
-        let header_2 = Header::new(String::from("accept-charset"), Some(String::from("set")), 15);
-        let header_3 = Header::new(String::from("accept-charset"), Some(String::from("set")), 63);
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
 
         let expected = vec![header_1.clone(), header_2.clone()];
 
