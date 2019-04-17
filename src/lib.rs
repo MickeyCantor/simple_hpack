@@ -57,7 +57,9 @@ impl Hpack{
                     self.process_indexed(stream)
                 }else if (x >> 6) == 1_u8{
                     self.process_indexed_literal(stream)
-                }else{
+                }else if (x >> 4) == 0_u8 {
+                    Err("Write me! 4")
+                } else {
                     Err("Write me! 3")
                 }
             },
@@ -65,6 +67,11 @@ impl Hpack{
         }
     }
 
+    ///Function used to process an indexed refrence to a header from the static or dynamic table
+    /// 
+    /// ## Arguments
+    /// 
+    /// * stream - the vector of bytes to be consumed by the method 
     fn process_indexed(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
         let (int, stream) = decode_int(stream, 7);
         let mut vec = self.read_headers(stream)?;
@@ -73,34 +80,61 @@ impl Hpack{
     }
 
     fn get_static_entry_from_index(&self, i: u32) -> Result<(String,String), &'static str> {
-        match STATIC_TABLE.get((i-1) as usize) {
-            Some(x) => Ok((String::from(x.0),String::from(x.1))),
-            None => Err("Write Me! 2"),
+        if i < 62 {
+            match STATIC_TABLE.get((i-1) as usize) {
+                Some(x) => Ok((String::from(x.0),String::from(x.1))),
+                None => Err("Error i is 0"),
+            }
+        } else {
+            match self.dynamic_table.table.get(((i - 62) - 1) as usize){
+                Some(x) => Ok((x.0.clone(), (x.1.clone()))),
+                None => Err("Write me 2"),
+            }
         }
     }
 
     fn process_indexed_literal(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
         let (index, stream) = decode_int(stream, 6);
+        let get_string = |stream| {
             let (length, mut stream) = decode_int(stream, 7);
             let range = length as usize;
 
-            match str::from_utf8(&stream.as_slice()[..range]) {
-                Ok(x) => {
-                    let value = String::from(x);
-                    for _ in 0..length {
-                        stream.remove(0);
-                    }
+            println!("length - {}, remining vector - {:?}", length, stream);
 
-                    let mut vec = self.read_headers(stream)?;
-                    let mut header = self.get_static_entry_from_index(index)?.clone();
-                    
-                    header.1 = value;
-                    self.dynamic_table.add(header.clone());
-                    vec.insert(0, Header{value: header});
-                    
-                    Ok(vec)
-                },
-                Err(_) => Err("Write me! 1")
+            let value = match str::from_utf8(&stream.as_slice()[..range]) {
+                Ok(x) => String::from(x),
+                Err(_) => String::from("invalid utf8"),
+            };
+
+            for _ in 0..length {
+                stream.remove(0);
+            }
+
+            (stream, value)
+        };
+        
+        if index == 0 {
+            let (stream, name) = get_string(stream);
+            let (stream, value) = get_string(stream);
+
+            let header = (name, String::from(value));
+            self.dynamic_table.add(header.clone());
+
+            let mut vec = self.read_headers(stream)?;
+            vec.insert(0, Header{ value:header });
+
+            Ok(vec)
+        } else {
+            let (stream, value) = get_string(stream);
+
+            let mut header = self.get_static_entry_from_index(index)?.clone();
+            header.1 = value;
+            self.dynamic_table.add(header.clone());
+
+            let mut vec = self.read_headers(stream)?;
+            vec.insert(0, Header{value: header});
+            
+            Ok(vec)
         }
     }
 }
@@ -114,7 +148,7 @@ impl Hpack{
 /// 
 /// ## Returns 
 /// 
-/// Result<Vec<u8>,&'static str> - a result holding either the Vector of bytes or an error string
+/// * Result<Vec<u8>,&'static str> - a result holding either the Vector of bytes or an error string
 pub fn new_indexed(number: u32) -> Result<Vec<u8>,&'static str>{
     if number == 0 {
         Err(ERROR_INDEX_ZERO)
@@ -456,10 +490,10 @@ mod tests {
     }
 
     #[test]
-    fn test_read_headers_dynamic_indexed(){
+    fn test_read_headers_literal_named(){
         let mut hpack = Hpack::new(128);
 
-        let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
+        let stream = vec![64_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54, 64_u8, 14_u8, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x2d, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74, 3_u8, 0x73, 0x65, 0x74];
 
         let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
         let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
@@ -468,6 +502,63 @@ mod tests {
 
         assert_eq!(expected, hpack.read_headers(stream).unwrap());
     }
+
+    #[test]
+    fn test_read_headers_dynamic_literial_indexed(){
+        let mut hpack = Hpack::new(128);
+
+        let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
+
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+
+        hpack.read_headers(stream);
+
+        let stream = vec![192_u8];
+        let expected = vec![header_1.clone()];
+
+        assert_eq!(expected,hpack.read_headers(stream).unwrap());
+    }
+
+    #[test]
+    fn test_read_headers_dynamic_literial_named(){
+        let mut hpack = Hpack::new(128);
+
+        let stream = vec![64_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54, 64_u8, 14_u8, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x2d, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74, 3_u8, 0x73, 0x65, 0x74];
+
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
+
+        hpack.read_headers(stream);
+
+        let stream = vec![192_u8, 191_u8];
+        let expected = vec![header_1.clone(), header_2.clone()];
+
+        assert_eq!(expected,hpack.read_headers(stream).unwrap());
+    }
+
+    #[test]
+    fn test_read_headers_literial_not_indexed_indexed(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![2_u8, 3_u8, 0x47, 0x45, 0x54];
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let expected = vec![header_1.clone()];
+
+        assert_eq!(expected, hpack.read_headers(stream).unwrap());
+    }
+
+    #[test]
+    fn test_read_headers_literial_not_indexed_named(){
+        let mut hpack = Hpack::new(128);
+
+        let stream = vec![0_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54];
+
+        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+
+        let expected = vec![header_1.clone()];
+
+        assert_eq!(expected, hpack.read_headers(stream).unwrap());
+    }
+
 
 
 }
