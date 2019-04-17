@@ -13,7 +13,8 @@ pub struct DynamicTable{
 
 #[derive(Hash, Eq, PartialEq, Debug, Clone)]
 pub struct Header {
-    value: (String, String)
+    value: (String, String),
+    indexed: bool
 }
 
 impl DynamicTable {
@@ -58,9 +59,11 @@ impl Hpack{
                 }else if (x >> 6) == 1_u8{
                     self.process_indexed_literal(stream)
                 }else if (x >> 4) == 0_u8 {
-                    Err("Write me! 4")
+                    self.process_non_indexed_literal(stream)
+                }else if (x >> 4) == 1_u8 {
+                    self.process_never_indexed_literal(stream)
                 } else {
-                    Err("Write me! 3")
+                    Err("Write me 7!")
                 }
             },
             None => Ok(Vec::new()),
@@ -75,28 +78,42 @@ impl Hpack{
     fn process_indexed(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
         let (int, stream) = decode_int(stream, 7);
         let mut vec = self.read_headers(stream)?;
-        vec.insert(0, Header{value: self.get_static_entry_from_index(int)?});
+        vec.insert(0, Header{value: self.get_static_entry_from_index(int)?, indexed: true});
         Ok(vec)
-    }
-
-    fn get_static_entry_from_index(&self, i: u32) -> Result<(String,String), &'static str> {
-        if i < 62 {
-            match STATIC_TABLE.get((i-1) as usize) {
-                Some(x) => Ok((String::from(x.0),String::from(x.1))),
-                None => Err("Error i is 0"),
-            }
-        } else {
-            match self.dynamic_table.table.get(((i - 62) - 1) as usize){
-                Some(x) => Ok((x.0.clone(), (x.1.clone()))),
-                None => Err("Write me 2"),
-            }
-        }
     }
 
     fn process_indexed_literal(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
         let (index, stream) = decode_int(stream, 6);
-        let get_string = |stream| {
-            let (length, mut stream) = decode_int(stream, 7);
+        
+        if index == 0 {
+            self.process_literial_with_name(stream, true)
+        } else {
+            self.process_literal_with_index(stream, index, true)
+        }
+    }
+
+    fn process_non_indexed_literal(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
+        let (index, stream) = decode_int(stream, 4);
+
+         if index == 0 {
+            self.process_literial_with_name(stream, true)
+        } else {
+            self.process_literal_with_index(stream, index, true)
+        }
+    }
+
+    fn process_never_indexed_literal(&mut self, stream: Vec<u8>) -> Result<Vec<Header>, &'static str> {
+        let (index, stream) = decode_int(stream, 4);
+
+        if index == 0 {
+            self.process_literial_with_name(stream, false)
+        } else {
+            self.process_literal_with_index(stream, index, false)
+        }
+    }
+
+    fn get_string(stream: Vec<u8>) -> (Vec<u8>, String){
+        let (length, mut stream) = decode_int(stream, 7);
             let range = length as usize;
 
             println!("length - {}, remining vector - {:?}", length, stream);
@@ -111,30 +128,46 @@ impl Hpack{
             }
 
             (stream, value)
-        };
+    }
+
+    fn process_literial_with_name(&mut self, stream: Vec<u8>, indexed: bool) -> Result<Vec<Header>, &'static str> {
+        let (stream, name) = Hpack::get_string(stream);
+        let (stream, value) = Hpack::get_string(stream);
+
+        let header = (name, String::from(value));
+        if indexed {self.dynamic_table.add(header.clone());}
+
+        let mut vec = self.read_headers(stream)?;
+        vec.insert(0, Header{ value:header , indexed: indexed});
+
+        Ok(vec)
+    }
+
+    fn process_literal_with_index(&mut self, stream: Vec<u8>, index: u32, indexed: bool) -> Result<Vec<Header>, &'static str> {
+        let (stream, value) = Hpack::get_string(stream);
+
+        let mut header = self.get_static_entry_from_index(index)?.clone();
+        header.1 = value;
+        if indexed {self.dynamic_table.add(header.clone());}
+
+        let mut vec = self.read_headers(stream)?;
+
+        vec.insert(0, Header{value: header, indexed: indexed});
         
-        if index == 0 {
-            let (stream, name) = get_string(stream);
-            let (stream, value) = get_string(stream);
+        Ok(vec)
+    }
 
-            let header = (name, String::from(value));
-            self.dynamic_table.add(header.clone());
-
-            let mut vec = self.read_headers(stream)?;
-            vec.insert(0, Header{ value:header });
-
-            Ok(vec)
+    fn get_static_entry_from_index(&self, i: u32) -> Result<(String,String), &'static str> {
+        if i < 62 {
+            match STATIC_TABLE.get((i-1) as usize) {
+                Some(x) => Ok((String::from(x.0),String::from(x.1))),
+                None => Err("Error i is 0"),
+            }
         } else {
-            let (stream, value) = get_string(stream);
-
-            let mut header = self.get_static_entry_from_index(index)?.clone();
-            header.1 = value;
-            self.dynamic_table.add(header.clone());
-
-            let mut vec = self.read_headers(stream)?;
-            vec.insert(0, Header{value: header});
-            
-            Ok(vec)
+            match self.dynamic_table.table.get(((i - 62) - 1) as usize){
+                Some(x) => Ok((x.0.clone(), (x.1.clone()))),
+                None => Err("Error index outside of dynamic table space"),
+            }
         }
     }
 }
@@ -171,30 +204,30 @@ pub fn new_indexed(number: u32) -> Result<Vec<u8>,&'static str>{
 ///  * Result<Vec<u8>,&'static str> - a result containing the Vector of bytes or an error string
 pub fn new_literal(value: &str, index: u32, name: Option<&str>, _huffman: bool) -> Result<Vec<u8>, &'static str>{
     let build_literal = |index, value: &str| {
-            if index == 0 {
-                Err(ERROR_INDEX_ZERO)
-            }else{
-                let mut payload = encode_int(7, value.len() as u32,
-                                mask_first_byte(encode_int(6, index, Vec::new()), 64_u8));
-                payload.extend_from_slice(value.as_bytes());
-                
-                Ok(payload)
-            }
-        };
-
-        let build_literal_with_name = |name: &str, value: &str| {
-            let mut payload = encode_int(7, name.len() as u32, vec![64_u8]);
-            payload.extend_from_slice(name.as_bytes());
-            payload = encode_int(7, value.len() as u32, payload);
+        if index == 0 {
+            Err(ERROR_INDEX_ZERO)
+        }else{
+            let mut payload = encode_int(7, value.len() as u32,
+                            mask_first_byte(encode_int(6, index, Vec::new()), 64_u8));
             payload.extend_from_slice(value.as_bytes());
-
+            
             Ok(payload)
-        };
-
-        match name {
-            Some(x) => build_literal_with_name(x, value),
-            None => build_literal(index, value)
         }
+    };
+
+    let build_literal_with_name = |name: &str, value: &str| {
+        let mut payload = encode_int(7, name.len() as u32, vec![64_u8]);
+        payload.extend_from_slice(name.as_bytes());
+        payload = encode_int(7, value.len() as u32, payload);
+        payload.extend_from_slice(value.as_bytes());
+
+        Ok(payload)
+    };
+
+    match name {
+        Some(x) => build_literal_with_name(x, value),
+        None => build_literal(index, value)
+    }
 }
 
 /// Function that takes a Literal field and sets it to not be indexed 
@@ -469,8 +502,8 @@ mod tests {
 
         let stream = vec![130_u8,132_u8];
 
-        let expected = vec![Header{value: (String::from(":method"),String::from("GET"))},
-                            Header{value: (String::from(":path"),String::from("/"))}];
+        let expected = vec![Header{value: (String::from(":method"),String::from("GET")), indexed: true},
+                            Header{value: (String::from(":path"),String::from("/")), indexed: true}];
 
         assert_eq!(expected,hpack.read_headers(stream).unwrap())
     }
@@ -481,8 +514,8 @@ mod tests {
 
         let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
-        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set")), indexed: true};
 
         let expected = vec![header_1.clone(), header_2.clone()];
 
@@ -495,8 +528,8 @@ mod tests {
 
         let stream = vec![64_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54, 64_u8, 14_u8, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x2d, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
-        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set")), indexed: true};
 
         let expected = vec![header_1.clone(), header_2.clone()];
 
@@ -509,7 +542,7 @@ mod tests {
 
         let stream = vec![66_u8, 3_u8, 0x47, 0x45, 0x54, 79_u8, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
 
         hpack.read_headers(stream);
 
@@ -525,8 +558,8 @@ mod tests {
 
         let stream = vec![64_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54, 64_u8, 14_u8, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x2d, 0x63, 0x68, 0x61, 0x72, 0x73, 0x65, 0x74, 3_u8, 0x73, 0x65, 0x74];
 
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
-        let header_2 = Header{value: (String::from("accept-charset"),String::from("set"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
+        let header_2 = Header{value: (String::from("accept-charset"),String::from("set")), indexed: true};
 
         hpack.read_headers(stream);
 
@@ -540,7 +573,7 @@ mod tests {
     fn test_read_headers_literial_not_indexed_indexed(){
         let mut hpack = Hpack::new(128);
         let stream = vec![2_u8, 3_u8, 0x47, 0x45, 0x54];
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
         let expected = vec![header_1.clone()];
 
         assert_eq!(expected, hpack.read_headers(stream).unwrap());
@@ -552,14 +585,80 @@ mod tests {
 
         let stream = vec![0_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54];
 
-        let header_1 = Header{value: (String::from(":method"),String::from("GET"))};
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: true};
 
         let expected = vec![header_1.clone()];
 
         assert_eq!(expected, hpack.read_headers(stream).unwrap());
     }
 
+    #[test]
+    fn test_read_headers_literial_not_indexed_dosent_get_indexed(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![2_u8, 3_u8, 0x47, 0x45, 0x54];
+        hpack.read_headers(stream);
 
+        let stream = vec![192_u8];
+
+        assert_eq!("Error index outside of dynamic table space", hpack.read_headers(stream).unwrap_err());
+    }
+
+    #[test]
+    fn test_read_headers_literial_not_indexed_dosent_get_indexed_with_name(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![0_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54];
+        hpack.read_headers(stream);
+
+        let stream = vec![192_u8];
+
+        assert_eq!("Error index outside of dynamic table space", hpack.read_headers(stream).unwrap_err());
+    }
+
+    #[test]
+    fn test_read_headers_literial_never_indexed_indexed(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![18_u8, 3_u8, 0x47, 0x45, 0x54];
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: false};
+        let expected = vec![header_1.clone()];
+
+        assert_eq!(expected, hpack.read_headers(stream).unwrap());
+    }
+
+    #[test]
+    fn test_read_headers_literial_never_indexed_named(){
+        let mut hpack = Hpack::new(128);
+
+        let stream = vec![16_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54];
+
+        let header_1 = Header{value: (String::from(":method"),String::from("GET")), indexed: false};
+
+        let expected = vec![header_1.clone()];
+
+        assert_eq!(expected, hpack.read_headers(stream).unwrap());
+        
+    }
+
+    #[test]
+    fn test_read_headers_literial_never_indexed_dosent_get_indexed(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![18_u8, 3_u8, 0x47, 0x45, 0x54];
+        hpack.read_headers(stream);
+
+        let stream = vec![192_u8];
+
+        assert_eq!("Error index outside of dynamic table space", hpack.read_headers(stream).unwrap_err());
+    }
+
+    #[test]
+    fn test_read_headers_literial_never_indexed_dosent_get_indexed_with_name(){
+        let mut hpack = Hpack::new(128);
+        let stream = vec![16_u8, 7_u8, 0x3a, 0x6d, 0x65, 0x74, 0x68, 0x6f, 0x64, 3_u8, 0x47, 0x45, 0x54];
+        hpack.read_headers(stream);
+
+        let stream = vec![192_u8];
+
+        assert_eq!("Error index outside of dynamic table space", hpack.read_headers(stream).unwrap_err());
+    }
 
 }
 
